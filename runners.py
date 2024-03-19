@@ -309,7 +309,7 @@ class InferenceRunner:
             tokens,
             memory=None,
             length=None,
-            active=None,
+            active=None
         ) -> LanguageModelOutput:
             if memory is not None:
                 assert active is not None
@@ -320,6 +320,15 @@ class InferenceRunner:
                     layers.append(l._replace(step=step))
                 memory = memory._replace(layers=layers)
             return lm()(tokens, memory, length=length)
+
+        def hk_forward_(
+            tokens,
+            memory=None,
+            length=None,
+            active=None
+        ):
+            lm_outputs = hk_forward(tokens, memory=memory, length=length, active=active)
+            return lm_outputs.logits
 
         def hk_sample_step(rngs, last_output: SampleOutput, memory, settings):
             rngs, rngs_ = jax.vmap(jax.random.split, out_axes=1)(rngs)
@@ -396,6 +405,7 @@ class InferenceRunner:
         prefill_memory_ = hk.without_apply_rng(hk.transform(hk_prefill_memory))
         new_memory_ = hk.without_apply_rng(hk.transform(hk_new_memory))
         forward_ = hk.without_apply_rng(hk.transform(hk_forward))
+        forward__ = hk.without_apply_rng(hk.transform(hk_forward_))
 
         rng = jax.random.PRNGKey(42)
         dummy_tokens = jnp.zeros((1, max_len), jnp.int32)
@@ -415,6 +425,11 @@ class InferenceRunner:
             in_shardings=(self.params_sharding, None, ds, ms, None),
             out_shardings=(None, ds, ms),
             donate_argnums=3,
+        )
+        self.forward = pjit.pjit(
+            forward__.apply,
+            in_shardings=(self.params_sharding, ds),
+            out_shardings=ds
         )
         self.prefill_memory = pjit.pjit(
             functools.partial(prefill_memory_.apply),
