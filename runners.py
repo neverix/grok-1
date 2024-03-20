@@ -275,9 +275,10 @@ class InferenceRunner:
     def initialize(self):
         runner = self.runner
         self.runner.transform_forward = True
+        bs = int(runner.bs_per_device * self.local_mesh_config[0])
         dummy_data = dict(
-            inputs=np.zeros((1, 256), dtype=np.int32),
-            targets=np.zeros((1, 256), dtype=np.int32),
+            inputs=np.zeros((bs, 256), dtype=np.int32),
+            targets=np.zeros((bs, 256), dtype=np.int32),
         )
         runner.initialize(
             dummy_data,
@@ -309,7 +310,8 @@ class InferenceRunner:
             tokens,
             memory=None,
             length=None,
-            active=None
+            active=None,
+            **kwargs
         ) -> LanguageModelOutput:
             if memory is not None:
                 assert active is not None
@@ -319,16 +321,21 @@ class InferenceRunner:
                     step = jnp.where(active, l.step, jnp.zeros_like(l.step))
                     layers.append(l._replace(step=step))
                 memory = memory._replace(layers=layers)
-            return lm()(tokens, memory, length=length)
+            return lm()(tokens, memory, length=length, **kwargs)
 
         def hk_forward_(
             tokens,
             memory=None,
             length=None,
-            active=None
+            active=None,
         ):
-            lm_outputs = hk_forward(tokens, memory=memory, length=length, active=active)
-            return lm_outputs.logits
+            return_embeddings = True  # TODO?..
+            lm_outputs = hk_forward(tokens, memory=memory, length=length, active=active,
+                                    return_embeddings=return_embeddings)
+            if return_embeddings:
+                return lm_outputs
+            else:
+                return lm_outputs.logits
 
         def hk_sample_step(rngs, last_output: SampleOutput, memory, settings):
             rngs, rngs_ = jax.vmap(jax.random.split, out_axes=1)(rngs)
