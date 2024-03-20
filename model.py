@@ -888,7 +888,7 @@ class MultiHeadAttention(hk.Module):
             sharding=P("model", "data"),
             mesh=mesh,
         )
-        return MHAOutput(final_projection(attn), new_memory)
+        return MHAOutput(final_projection(attn).reshape(b, t, -1), new_memory)
 
     @hk.transparent
     def _linear_projection(
@@ -1214,15 +1214,21 @@ class LanguageModel(hk.Module):
         memory: Optional[Memory] = None,
         *,
         batch: Dict[str, jax.Array] = {},
+        last_hid: bool = False,
+        embed_inputs: bool = True,
+        use_layernorm: bool = True,
+        return_embeddings: bool = False,
         last_hid_only: bool = False,
         length: Optional[jax.Array] = None,
+        input_mask: Optional[jax.Array] = None,
     ) -> LanguageModelOutput:
         """Forward pass, producing a sequence of logits."""
         del batch  # Unused.
 
         config = self.config
 
-        input_mask = jnp.greater(tokens, config.pad_token)
+        if embed_inputs:
+            input_mask = jnp.greater(tokens, config.pad_token)
 
         # Embed the input tokens and positions.
         in_out_embed = InOutEmbed(
@@ -1230,9 +1236,12 @@ class LanguageModel(hk.Module):
             embed_dim=self.config.model_size,
             sharding=P(None, ("data", "model")),
         )
-        input_embeddings = in_out_embed(tokens).astype(config.fprop_dtype)
+        if embed_inputs:
+            input_embeddings = in_out_embed(tokens)
+        else:
+            input_embeddings = tokens
         input_embeddings = with_sharding_constraint(
-            input_embeddings, P("data", None, self.model.model_axis)
+            input_embeddings.astype(config.fprop_dtype), P("data", None, self.model.model_axis)
         )
         input_embeddings *= config.embedding_multiplier_scale
 
@@ -1249,8 +1258,12 @@ class LanguageModel(hk.Module):
         else:
             embeddings = with_sharding_constraint(embeddings, P("data", None))
         rank_logger.debug(f"Final embedding shape: {embeddings.shape}")
-        embeddings = layer_norm(embeddings, self.model)
+        if use_layernorm:
+            embeddings = layer_norm(embeddings, self.model)
         assert embeddings.dtype == self.fprop_dtype
+
+        if return_embeddings:
+            return embeddings
 
         if last_hid_only:
             last_step = jnp.maximum(jnp.sum(input_mask.astype(jnp.int32), axis=1) - 1, 0)
